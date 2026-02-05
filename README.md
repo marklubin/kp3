@@ -116,8 +116,10 @@ curl "http://localhost:8080/passages/search?query=user+preferences" \
 
 - **[Tutorial](docs/tutorial.md)** - Comprehensive walkthrough from zero to production
 - **[Examples](examples/)** - Hands-on demos for each feature
+- **[Hierarchical Memory Guide](examples/07_hierarchical_memory/)** - Build a complete memory system
 - **[CLI Reference](docs/cli-reference.md)** - All CLI commands
 - **[API Reference](docs/api-reference.md)** - REST API endpoints
+- **[Hooks](docs/hooks.md)** - Automate with ref hooks
 
 ## Configuration
 

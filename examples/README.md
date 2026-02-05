@@ -38,6 +38,7 @@ uv run python examples/01_passages/semantic_notes.py
 | 04 | [Branches](04_branches/) | Fork/promote for experimentation |
 | 05 | [Processing](05_processing/) | Transformation pipelines |
 | 06 | [Provenance](06_provenance/) | Track what created what |
+| 07 | [Hierarchical Memory](07_hierarchical_memory/) | **Complete memory system** with daily/weekly/monthly summarization |
 
 ## Architecture
 
