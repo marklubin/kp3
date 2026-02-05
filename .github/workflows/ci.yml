@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: kp3
+          POSTGRES_PASSWORD: kp3
+          POSTGRES_DB: kp3
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Run migrations
+        run: uv run alembic upgrade head
+        env:
+          KP3_DATABASE_URL: postgresql+asyncpg://kp3:kp3@localhost:5432/kp3
+      - name: Run tests
+        run: uv run pytest -v -m "not docker"
+        env:
+          KP3_DATABASE_URL: postgresql+asyncpg://kp3:kp3@localhost:5432/kp3
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Check formatting
+        run: uv run ruff format --check
+      - name: Check linting
+        run: uv run ruff check
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Run type checker
+        run: uv run pyright

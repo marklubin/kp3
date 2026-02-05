@@ -1,53 +1,100 @@
 # KP3 Examples
 
-This directory contains example code for extending and customizing KP3.
+Hands-on demos that progressively showcase KP3's capabilities.
 
-## Importers
+## Quick Start
 
-The `importers/` directory contains example code for importing data from various sources into KP3.
+```bash
+# 1. Copy environment template and add your OpenAI API key
+cp .env.example .env
+# Edit .env: KP3_OPENAI_API_KEY=sk-your-key
 
-### SQLite Importer
+# 2. Start PostgreSQL with pgvector
+podman run -d --name kp3-postgres \
+  -e POSTGRES_USER=kp3 \
+  -e POSTGRES_PASSWORD=kp3 \
+  -e POSTGRES_DB=kp3 \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16
 
-`importers/sqlite_importer.py` demonstrates how to import data from a SQLite database. It expects a schema with:
+# 3. Install dependencies and run migrations
+uv sync
+uv run alembic upgrade head
 
-- `memory_shards` table with columns: `id`, `uid`, `contents`, `created_at`, `agent_id`
-- `agents` table with columns: `id`, `name`
+# 4. Start the service
+uv run kp3-service
 
-You can use this as a template for creating your own importers.
-
-#### Usage
-
-```python
-import asyncio
-from pathlib import Path
-from kp3.db.engine import async_session
-from examples.importers.sqlite_importer import import_memory_shards
-
-async def main():
-    async with async_session() as session:
-        async with session.begin():
-            stats = await import_memory_shards(session, Path("backup.db"))
-            print(f"Imported: {stats.imported}")
-            print(f"Duplicates skipped: {stats.skipped_duplicate}")
-            print(f"Empty skipped: {stats.skipped_empty}")
-
-asyncio.run(main())
+# 5. Run any example (in another terminal)
+uv run python examples/01_passages/semantic_notes.py
 ```
 
-## Creating Your Own Importer
+## Examples
 
-To create a custom importer:
+| # | Example | What You'll Learn |
+|---|---------|-------------------|
+| 01 | [Passages](01_passages/) | Store text, hybrid search, tags |
+| 02 | [Refs](02_refs/) | Mutable pointers with history |
+| 03 | [Scopes](03_scopes/) | Versioned memory containers |
+| 04 | [Branches](04_branches/) | Fork/promote for experimentation |
+| 05 | [Processing](05_processing/) | Transformation pipelines |
+| 06 | [Provenance](06_provenance/) | Track what created what |
 
-1. Create a new file in `importers/` (e.g., `my_importer.py`)
-2. Import the passage service: `from kp3.services.passages import create_passage`
-3. Implement your data loading logic
-4. Use `create_passage()` to insert passages with appropriate metadata
-5. Use `get_passage_by_external_id()` for deduplication
+## Architecture
 
-Key fields when creating passages:
-- `content`: The text content
-- `passage_type`: Category of the passage (e.g., "memory_shard", "document")
-- `source_system`: Identifier for the import source (for deduplication)
-- `source_external_id`: Unique ID from the source system
-- `metadata`: Additional structured data about the passage
-- `period_start`/`period_end`: Time range the passage covers
+### Track A: Core Data Primitives
+
+```
+Passages → Refs → Scopes → Branches
+   │         │       │         │
+   │         │       │         └── Groups of refs for experimentation
+   │         │       └── Versioned search closures
+   │         └── Mutable pointers to passages
+   └── Fundamental unit of content
+```
+
+### Track B: Processing Layer
+
+```
+Processing Runs → Provenance
+       │              │
+       │              └── Track which passages created which
+       └── Transform passages (summarize, extract, etc.)
+```
+
+## Running Examples
+
+All examples use `python-dotenv` to load environment from `.env`:
+
+```bash
+# Just run directly - no shell tricks needed
+uv run python examples/01_passages/semantic_notes.py
+```
+
+## Troubleshooting
+
+### "Could not connect to KP3 service"
+- Ensure the service is running: `pgrep -f kp3-service`
+- Check it's healthy: `curl http://localhost:8080/health`
+
+### "Embedding generation failed"
+- Verify `KP3_OPENAI_API_KEY` is set in `.env`
+- Check your OpenAI API quota
+
+### "Duplicate content" errors
+- Examples handle this gracefully (will find existing passages)
+- This is expected on re-runs
+
+## Using Docker Compose
+
+If you prefer Docker Compose:
+
+```bash
+# Set your API key in .env first
+docker compose up -d
+docker compose exec kp3-service uv run alembic upgrade head
+docker compose exec kp3-service uv run python examples/01_passages/semantic_notes.py
+```
+
+## Learn More
+
+See the full [Tutorial](../docs/tutorial.md) for detailed explanations.

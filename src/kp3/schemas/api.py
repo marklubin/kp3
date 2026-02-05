@@ -67,6 +67,18 @@ class PassageCreateResponse(BaseModel):
     passage_type: str
 
 
+class PassageResponse(BaseModel):
+    """Response from GET /passages/{id} endpoint."""
+
+    id: UUID
+    content: str
+    passage_type: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    created_at: datetime
+
+
 # =============================================================================
 # Tag schemas
 # =============================================================================
@@ -110,3 +122,187 @@ class PassageTagsResponse(BaseModel):
 
     passage_id: UUID
     tags: list[TagResponse]
+
+
+# =============================================================================
+# Ref schemas
+# =============================================================================
+
+
+class RefResponse(BaseModel):
+    """Response for ref endpoints."""
+
+    name: str
+    passage_id: UUID
+    updated_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RefListResponse(BaseModel):
+    """Response from GET /refs endpoint."""
+
+    refs: list[RefResponse]
+    count: int
+
+
+class RefSetRequest(BaseModel):
+    """Request body for PUT /refs/{name} endpoint."""
+
+    passage_id: UUID
+    metadata: dict[str, Any] | None = None
+
+
+class RefHistoryEntry(BaseModel):
+    """A single entry in ref history."""
+
+    id: UUID
+    ref_name: str
+    passage_id: UUID
+    previous_passage_id: UUID | None
+    changed_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RefHistoryResponse(BaseModel):
+    """Response from GET /refs/{name}/history endpoint."""
+
+    history: list[RefHistoryEntry]
+    count: int
+
+
+# =============================================================================
+# Branch schemas
+# =============================================================================
+
+
+class BranchResponse(BaseModel):
+    """Response for branch endpoints."""
+
+    id: UUID
+    name: str
+    ref_prefix: str
+    branch_name: str
+    human_ref: str
+    persona_ref: str
+    world_ref: str
+    parent_branch_id: UUID | None
+    is_main: bool
+    hooks_enabled: bool
+    description: str | None
+    created_at: datetime
+
+
+class BranchListResponse(BaseModel):
+    """Response from GET /branches endpoint."""
+
+    branches: list[BranchResponse]
+    count: int
+
+
+class BranchCreateRequest(BaseModel):
+    """Request body for POST /branches endpoint."""
+
+    ref_prefix: str = Field(description="Agent/entity prefix (e.g., 'corindel')")
+    branch_name: str = Field(description="Branch name (e.g., 'experiment-1' or 'HEAD')")
+    description: str | None = None
+    is_main: bool = Field(default=False, description="Whether this is the main/production branch")
+    hooks_enabled: bool | None = Field(
+        default=None, description="Whether hooks fire. Defaults to True for main, False otherwise."
+    )
+
+
+class BranchForkRequest(BaseModel):
+    """Request body for POST /branches/{name}/fork endpoint."""
+
+    new_branch_name: str = Field(description="Name for the new branch")
+    description: str | None = None
+
+
+class BranchPromoteRequest(BaseModel):
+    """Request body for POST /branches/{name}/promote endpoint."""
+
+    target_branch: str = Field(default="HEAD", description="Target branch to promote to")
+
+
+# =============================================================================
+# Processing Run schemas
+# =============================================================================
+
+
+class RunResponse(BaseModel):
+    """Response for run endpoints."""
+
+    id: UUID
+    input_sql: str
+    processor_type: str
+    processor_config: dict[str, Any]
+    status: str
+    total_groups: int | None
+    processed_groups: int
+    output_count: int
+    error_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+
+
+class RunListResponse(BaseModel):
+    """Response from GET /runs endpoint."""
+
+    runs: list[RunResponse]
+    count: int
+
+
+class RunCreateRequest(BaseModel):
+    """Request body for POST /runs endpoint."""
+
+    input_sql: str = Field(description="SQL query returning passage_ids, group_key, group_metadata")
+    processor_type: str = Field(description="Processor type (e.g., 'llm_prompt')")
+    processor_config: dict[str, Any] = Field(description="Processor-specific configuration")
+
+
+# =============================================================================
+# Provenance schemas
+# =============================================================================
+
+
+class ProvenancePassage(BaseModel):
+    """A passage in provenance results."""
+
+    id: UUID
+    content: str
+    passage_type: str
+    created_at: datetime
+
+
+class ProvenanceSourcesResponse(BaseModel):
+    """Response from GET /passages/{id}/sources endpoint."""
+
+    passage_id: UUID
+    sources: list[ProvenancePassage]
+    count: int
+
+
+class ProvenanceDerivedResponse(BaseModel):
+    """Response from GET /passages/{id}/derived endpoint."""
+
+    passage_id: UUID
+    derived: list[ProvenancePassage]
+    count: int
+
+
+class ProvenanceChainEntry(BaseModel):
+    """An entry in the provenance chain."""
+
+    derived_passage_id: UUID
+    source_passage_id: UUID
+    processing_run_id: UUID | None
+    depth: int
+
+
+class ProvenanceChainResponse(BaseModel):
+    """Response from GET /passages/{id}/provenance endpoint."""
+
+    passage_id: UUID
+    chain: list[ProvenanceChainEntry]
+    count: int

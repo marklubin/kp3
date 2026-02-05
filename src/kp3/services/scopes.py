@@ -61,10 +61,14 @@ async def create_scope(
     head_ref = f"{agent_id}/scope/{name}/HEAD"
 
     # Create initial empty scope definition
+    # Include scope identifier in content to ensure unique content hash per scope
     initial_def = ScopeDefinition(refs=[], passages=[], version=1, created_from=None)
+    def_content = initial_def.model_dump_json()
+    # Embed scope identity to make content unique (appended as JSON comment-like structure)
+    unique_content = f'{def_content[:-1]},"_scope_id":"{agent_id}/{name}"}}'
     def_passage = await create_passage(
         session,
-        content=initial_def.model_dump_json(),
+        content=unique_content,
         passage_type=SCOPE_DEFINITION_TYPE,
         agent_id=agent_id,
     )

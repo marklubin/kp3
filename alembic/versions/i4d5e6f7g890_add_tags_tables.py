@@ -11,6 +11,7 @@ Adds tagging system for passages:
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
+from sqlalchemy.dialects.postgresql import TSVECTOR
 
 from alembic import op
 
@@ -32,6 +33,7 @@ def upgrade() -> None:
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column(
             "name_tsv",
+            TSVECTOR,
             sa.Computed(
                 "to_tsvector('english', name || ' ' || coalesce(description, ''))",
                 persisted=True,

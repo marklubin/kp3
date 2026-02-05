@@ -5,16 +5,36 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 
 from kp3.db.engine import async_session
 from kp3.processors.embedding import generate_embedding
 from kp3.schemas.api import (
+    BranchCreateRequest,
+    BranchForkRequest,
+    BranchListResponse,
+    BranchPromoteRequest,
+    BranchResponse,
     PassageCreate,
     PassageCreateResponse,
+    PassageResponse,
     PassageResult,
     PassageTagsRequest,
     PassageTagsResponse,
     PromptResponse,
+    ProvenanceChainEntry,
+    ProvenanceChainResponse,
+    ProvenanceDerivedResponse,
+    ProvenancePassage,
+    ProvenanceSourcesResponse,
+    RefHistoryEntry,
+    RefHistoryResponse,
+    RefListResponse,
+    RefResponse,
+    RefSetRequest,
+    RunCreateRequest,
+    RunListResponse,
+    RunResponse,
     SearchResponse,
     TagCreate,
     TagListResponse,
@@ -35,8 +55,22 @@ from kp3.schemas.scope import (
     ScopeRevertRequest,
     ScopeRevertResponse,
 )
-from kp3.services.passages import create_passage
+from kp3.services.branches import (
+    BranchError,
+    BranchExistsError,
+    BranchNotFoundError,
+    create_branch,
+    delete_branch,
+    fork_branch,
+    get_branch_by_name,
+    list_branches,
+    promote_branch,
+)
+from kp3.services.derivations import get_derived, get_full_provenance, get_sources
+from kp3.services.passages import create_passage, get_passage
 from kp3.services.prompts import get_active_prompt
+from kp3.services.refs import delete_ref, get_ref_history, list_refs, set_ref
+from kp3.services.runs import create_run, get_run, list_runs
 from kp3.services.scopes import (
     add_passages_to_scope,
     add_refs_to_scope,
@@ -164,22 +198,153 @@ async def create_new_passage(
         raise HTTPException(status_code=502, detail=f"Embedding generation failed: {e}") from e
 
     async with async_session() as session:
-        passage = await create_passage(
-            session,
-            content=payload.content,
-            passage_type=payload.passage_type,
-            metadata=payload.metadata,
-            period_start=payload.period_start,
-            period_end=payload.period_end,
-            embedding_openai=embedding,
-            agent_id=x_agent_id,
-        )
-        await session.commit()
+        try:
+            passage = await create_passage(
+                session,
+                content=payload.content,
+                passage_type=payload.passage_type,
+                metadata=payload.metadata,
+                period_start=payload.period_start,
+                period_end=payload.period_end,
+                embedding_openai=embedding,
+                agent_id=x_agent_id,
+            )
+            await session.commit()
+        except IntegrityError as e:
+            # Duplicate content - return 409 with info about finding the existing passage
+            await session.rollback()
+            if "content_hash" in str(e):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Passage with identical content already exists. Use search to find it.",
+                ) from e
+            raise
 
         return PassageCreateResponse(
             id=passage.id,
             content=passage.content,
             passage_type=passage.passage_type,
+        )
+
+
+@router.get("/passages/{passage_id}", response_model=PassageResponse)
+async def get_passage_by_id(
+    passage_id: UUID,
+    x_agent_id: str = Header(..., alias="X-Agent-ID"),
+) -> PassageResponse:
+    """Get a passage by ID.
+
+    Returns the full passage including metadata and timestamps.
+
+    Requires X-Agent-ID header. Only returns the passage if it belongs to that agent.
+    """
+    async with async_session() as session:
+        passage = await get_passage(session, passage_id)
+
+    if not passage:
+        raise HTTPException(status_code=404, detail=f"Passage '{passage_id}' not found")
+
+    # Verify agent ownership
+    if passage.agent_id != x_agent_id:
+        raise HTTPException(status_code=404, detail=f"Passage '{passage_id}' not found")
+
+    return PassageResponse(
+        id=passage.id,
+        content=passage.content,
+        passage_type=passage.passage_type,
+        metadata=passage.metadata_ or {},
+        period_start=passage.period_start,
+        period_end=passage.period_end,
+        created_at=passage.created_at,
+    )
+
+
+@router.get("/passages/{passage_id}/sources", response_model=ProvenanceSourcesResponse)
+async def get_passage_sources(passage_id: UUID) -> ProvenanceSourcesResponse:
+    """Get the immediate source passages for a derived passage.
+
+    Returns passages that were used as inputs to create this passage.
+    """
+    async with async_session() as session:
+        passage = await get_passage(session, passage_id)
+        if not passage:
+            raise HTTPException(status_code=404, detail=f"Passage '{passage_id}' not found")
+
+        sources = await get_sources(session, passage_id)
+
+        return ProvenanceSourcesResponse(
+            passage_id=passage_id,
+            sources=[
+                ProvenancePassage(
+                    id=p.id,
+                    content=p.content,
+                    passage_type=p.passage_type,
+                    created_at=p.created_at,
+                )
+                for p in sources
+            ],
+            count=len(sources),
+        )
+
+
+@router.get("/passages/{passage_id}/derived", response_model=ProvenanceDerivedResponse)
+async def get_passage_derived(passage_id: UUID) -> ProvenanceDerivedResponse:
+    """Get passages that were derived from this passage.
+
+    Returns passages that used this passage as an input.
+    """
+    async with async_session() as session:
+        passage = await get_passage(session, passage_id)
+        if not passage:
+            raise HTTPException(status_code=404, detail=f"Passage '{passage_id}' not found")
+
+        derived = await get_derived(session, passage_id)
+
+        return ProvenanceDerivedResponse(
+            passage_id=passage_id,
+            derived=[
+                ProvenancePassage(
+                    id=p.id,
+                    content=p.content,
+                    passage_type=p.passage_type,
+                    created_at=p.created_at,
+                )
+                for p in derived
+            ],
+            count=len(derived),
+        )
+
+
+@router.get("/passages/{passage_id}/provenance", response_model=ProvenanceChainResponse)
+async def get_passage_provenance(
+    passage_id: UUID,
+    max_depth: int = Query(default=10, ge=1, le=100, description="Maximum chain depth"),
+) -> ProvenanceChainResponse:
+    """Get the full provenance chain for a passage.
+
+    Recursively finds all source passages up to max_depth.
+    """
+    async with async_session() as session:
+        passage = await get_passage(session, passage_id)
+        if not passage:
+            raise HTTPException(status_code=404, detail=f"Passage '{passage_id}' not found")
+
+        chain = await get_full_provenance(session, passage_id, max_depth=max_depth)
+
+        return ProvenanceChainResponse(
+            passage_id=passage_id,
+            chain=[
+                ProvenanceChainEntry(
+                    derived_passage_id=UUID(str(c["derived_passage_id"])),
+                    source_passage_id=UUID(str(c["source_passage_id"])),
+                    processing_run_id=UUID(str(c["processing_run_id"]))
+                    if c["processing_run_id"]
+                    else None,
+                    depth=int(c["depth"]),
+                )
+                for c in chain
+            ],
+            count=len(chain),
         )
 
 
@@ -428,6 +593,444 @@ async def detach_tags_from_passage_endpoint(
 
 
 # =============================================================================
+# Ref endpoints
+# =============================================================================
+
+
+@router.get("/refs", response_model=RefListResponse)
+async def list_refs_endpoint(
+    prefix: str | None = Query(default=None, description="Filter refs by prefix"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum results"),
+) -> RefListResponse:
+    """List all refs, optionally filtered by prefix.
+
+    Refs are mutable pointers to passages, similar to git refs.
+    Use prefix to filter (e.g., "world/human/" for all human world model refs).
+    """
+    async with async_session() as session:
+        refs = await list_refs(session, prefix=prefix, limit=limit)
+
+        return RefListResponse(
+            refs=[
+                RefResponse(
+                    name=r["name"],
+                    passage_id=r["passage_id"],
+                    updated_at=r["updated_at"],
+                    metadata=r["metadata"] or {},
+                )
+                for r in refs
+            ],
+            count=len(refs),
+        )
+
+
+# NOTE: /history endpoint must come BEFORE the generic {name:path} endpoint
+# because FastAPI matches routes in order and {name:path} would capture "name/history"
+@router.get("/refs/{name:path}/history", response_model=RefHistoryResponse)
+async def get_ref_history_endpoint(
+    name: str,
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum entries"),
+) -> RefHistoryResponse:
+    """Get the history of changes for a ref.
+
+    Returns history entries ordered by most recent first.
+    """
+    async with async_session() as session:
+        history = await get_ref_history(session, name, limit=limit)
+
+        if not history:
+            # Check if ref exists (might have no history if just created)
+            refs = await list_refs(session, prefix=name, limit=1)
+            ref = next((r for r in refs if r["name"] == name), None)
+            if not ref:
+                raise HTTPException(status_code=404, detail=f"Ref '{name}' not found")
+
+        return RefHistoryResponse(
+            history=[
+                RefHistoryEntry(
+                    id=h["id"],
+                    ref_name=h["ref_name"],
+                    passage_id=h["passage_id"],
+                    previous_passage_id=h["previous_passage_id"],
+                    changed_at=h["changed_at"],
+                    metadata=h["metadata"] or {},
+                )
+                for h in history
+            ],
+            count=len(history),
+        )
+
+
+@router.get("/refs/{name:path}", response_model=RefResponse)
+async def get_ref_endpoint(name: str) -> RefResponse:
+    """Get a ref by name.
+
+    Returns the passage ID that the ref currently points to.
+    The name can include slashes (e.g., "world/human/HEAD").
+    """
+    async with async_session() as session:
+        refs = await list_refs(session, prefix=name, limit=1)
+
+        # Find exact match (prefix search might return partial matches)
+        ref = next((r for r in refs if r["name"] == name), None)
+        if not ref:
+            raise HTTPException(status_code=404, detail=f"Ref '{name}' not found")
+
+        return RefResponse(
+            name=ref["name"],
+            passage_id=ref["passage_id"],
+            updated_at=ref["updated_at"],
+            metadata=ref["metadata"] or {},
+        )
+
+
+@router.put("/refs/{name:path}", response_model=RefResponse, status_code=200)
+async def set_ref_endpoint(name: str, payload: RefSetRequest) -> RefResponse:
+    """Set a ref to point to a passage.
+
+    Creates the ref if it doesn't exist, updates it if it does.
+    Records history for auditing.
+    """
+    async with async_session() as session:
+        # Verify passage exists
+        passage = await get_passage(session, payload.passage_id)
+        if not passage:
+            raise HTTPException(
+                status_code=404, detail=f"Passage '{payload.passage_id}' not found"
+            )
+
+        ref = await set_ref(
+            session, name, payload.passage_id, metadata=payload.metadata, fire_hooks=True
+        )
+        await session.commit()
+
+        return RefResponse(
+            name=ref.name,
+            passage_id=ref.passage_id,
+            updated_at=ref.updated_at,
+            metadata=ref.metadata_ or {},
+        )
+
+
+@router.delete("/refs/{name:path}", status_code=204)
+async def delete_ref_endpoint(name: str) -> None:
+    """Delete a ref.
+
+    Note: This does not delete the passage it points to or the ref history.
+    """
+    async with async_session() as session:
+        deleted = await delete_ref(session, name)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Ref '{name}' not found")
+        await session.commit()
+
+
+# =============================================================================
+# Branch endpoints
+# =============================================================================
+
+
+@router.get("/branches", response_model=BranchListResponse)
+async def list_branches_endpoint(
+    ref_prefix: str | None = Query(default=None, description="Filter by ref prefix"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum results"),
+) -> BranchListResponse:
+    """List all branches, optionally filtered by ref prefix.
+
+    Branches group the 3 world model refs (human/persona/world) as a unit.
+    """
+    async with async_session() as session:
+        branches = await list_branches(session, ref_prefix=ref_prefix, limit=limit)
+
+        return BranchListResponse(
+            branches=[
+                BranchResponse(
+                    id=b.id,
+                    name=b.name,
+                    ref_prefix=b.ref_prefix,
+                    branch_name=b.branch_name,
+                    human_ref=b.human_ref,
+                    persona_ref=b.persona_ref,
+                    world_ref=b.world_ref,
+                    parent_branch_id=b.parent_branch_id,
+                    is_main=b.is_main,
+                    hooks_enabled=b.hooks_enabled,
+                    description=b.description,
+                    created_at=b.created_at,
+                )
+                for b in branches
+            ],
+            count=len(branches),
+        )
+
+
+@router.post("/branches", response_model=BranchResponse, status_code=201)
+async def create_branch_endpoint(payload: BranchCreateRequest) -> BranchResponse:
+    """Create a new branch.
+
+    Creates a new branch with empty refs. Use fork endpoint to derive from an existing branch.
+    """
+    async with async_session() as session:
+        try:
+            branch = await create_branch(
+                session,
+                ref_prefix=payload.ref_prefix,
+                branch_name=payload.branch_name,
+                description=payload.description,
+                is_main=payload.is_main,
+                hooks_enabled=payload.hooks_enabled,
+            )
+            await session.commit()
+        except BranchExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
+        return BranchResponse(
+            id=branch.id,
+            name=branch.name,
+            ref_prefix=branch.ref_prefix,
+            branch_name=branch.branch_name,
+            human_ref=branch.human_ref,
+            persona_ref=branch.persona_ref,
+            world_ref=branch.world_ref,
+            parent_branch_id=branch.parent_branch_id,
+            is_main=branch.is_main,
+            hooks_enabled=branch.hooks_enabled,
+            description=branch.description,
+            created_at=branch.created_at,
+        )
+
+
+@router.get("/branches/{name:path}", response_model=BranchResponse)
+async def get_branch_endpoint(name: str) -> BranchResponse:
+    """Get a branch by its full name (e.g., 'corindel/experiment-1')."""
+    async with async_session() as session:
+        branch = await get_branch_by_name(session, name)
+
+    if not branch:
+        raise HTTPException(status_code=404, detail=f"Branch '{name}' not found")
+
+    return BranchResponse(
+        id=branch.id,
+        name=branch.name,
+        ref_prefix=branch.ref_prefix,
+        branch_name=branch.branch_name,
+        human_ref=branch.human_ref,
+        persona_ref=branch.persona_ref,
+        world_ref=branch.world_ref,
+        parent_branch_id=branch.parent_branch_id,
+        is_main=branch.is_main,
+        hooks_enabled=branch.hooks_enabled,
+        description=branch.description,
+        created_at=branch.created_at,
+    )
+
+
+@router.delete("/branches/{name:path}", status_code=204)
+async def delete_branch_endpoint(
+    name: str,
+    delete_refs: bool = Query(
+        default=False, description="Also delete the underlying refs"
+    ),
+) -> None:
+    """Delete a branch.
+
+    Cannot delete main branches. Optionally also deletes the underlying refs.
+    """
+    async with async_session() as session:
+        branch = await get_branch_by_name(session, name)
+        if not branch:
+            raise HTTPException(status_code=404, detail=f"Branch '{name}' not found")
+
+        try:
+            deleted = await delete_branch(
+                session,
+                branch.ref_prefix,
+                branch.branch_name,
+                delete_refs=delete_refs,
+            )
+            if not deleted:
+                raise HTTPException(status_code=404, detail=f"Branch '{name}' not found")
+            await session.commit()
+        except BranchError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/branches/{name:path}/fork", response_model=BranchResponse, status_code=201)
+async def fork_branch_endpoint(name: str, payload: BranchForkRequest) -> BranchResponse:
+    """Fork a branch, copying its current refs to a new branch.
+
+    The new branch starts with the same passage IDs as the source.
+    """
+    async with async_session() as session:
+        source_branch = await get_branch_by_name(session, name)
+        if not source_branch:
+            raise HTTPException(status_code=404, detail=f"Branch '{name}' not found")
+
+        try:
+            new_branch = await fork_branch(
+                session,
+                ref_prefix=source_branch.ref_prefix,
+                source_branch=source_branch.branch_name,
+                new_branch_name=payload.new_branch_name,
+                description=payload.description,
+            )
+            await session.commit()
+        except BranchNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except BranchExistsError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
+        return BranchResponse(
+            id=new_branch.id,
+            name=new_branch.name,
+            ref_prefix=new_branch.ref_prefix,
+            branch_name=new_branch.branch_name,
+            human_ref=new_branch.human_ref,
+            persona_ref=new_branch.persona_ref,
+            world_ref=new_branch.world_ref,
+            parent_branch_id=new_branch.parent_branch_id,
+            is_main=new_branch.is_main,
+            hooks_enabled=new_branch.hooks_enabled,
+            description=new_branch.description,
+            created_at=new_branch.created_at,
+        )
+
+
+@router.post("/branches/{name:path}/promote", response_model=BranchResponse)
+async def promote_branch_endpoint(name: str, payload: BranchPromoteRequest) -> BranchResponse:
+    """Promote a branch to another branch (typically HEAD).
+
+    Copies the current passage IDs from source refs to target refs.
+    Fires hooks on the target refs if the target branch has hooks_enabled.
+    """
+    async with async_session() as session:
+        source_branch = await get_branch_by_name(session, name)
+        if not source_branch:
+            raise HTTPException(status_code=404, detail=f"Branch '{name}' not found")
+
+        try:
+            target_branch = await promote_branch(
+                session,
+                ref_prefix=source_branch.ref_prefix,
+                source_branch=source_branch.branch_name,
+                target_branch=payload.target_branch,
+            )
+            await session.commit()
+        except BranchNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+        return BranchResponse(
+            id=target_branch.id,
+            name=target_branch.name,
+            ref_prefix=target_branch.ref_prefix,
+            branch_name=target_branch.branch_name,
+            human_ref=target_branch.human_ref,
+            persona_ref=target_branch.persona_ref,
+            world_ref=target_branch.world_ref,
+            parent_branch_id=target_branch.parent_branch_id,
+            is_main=target_branch.is_main,
+            hooks_enabled=target_branch.hooks_enabled,
+            description=target_branch.description,
+            created_at=target_branch.created_at,
+        )
+
+
+# =============================================================================
+# Processing Run endpoints
+# =============================================================================
+
+
+@router.get("/runs", response_model=RunListResponse)
+async def list_runs_endpoint(
+    status: str | None = Query(default=None, description="Filter by status"),
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum results"),
+) -> RunListResponse:
+    """List processing runs, optionally filtered by status.
+
+    Status values: pending, running, completed, failed
+    """
+    async with async_session() as session:
+        runs = await list_runs(session, status=status, limit=limit)
+
+        return RunListResponse(
+            runs=[
+                RunResponse(
+                    id=r.id,
+                    input_sql=r.input_sql,
+                    processor_type=r.processor_type,
+                    processor_config=r.processor_config,
+                    status=r.status,
+                    total_groups=r.total_groups,
+                    processed_groups=r.processed_groups,
+                    output_count=r.output_count,
+                    error_message=r.error_message,
+                    started_at=r.started_at,
+                    completed_at=r.completed_at,
+                    created_at=r.created_at,
+                )
+                for r in runs
+            ],
+            count=len(runs),
+        )
+
+
+@router.post("/runs", response_model=RunResponse, status_code=201)
+async def create_run_endpoint(payload: RunCreateRequest) -> RunResponse:
+    """Create a new processing run.
+
+    The run is created in 'pending' status. Use the CLI to execute it.
+    """
+    async with async_session() as session:
+        run = await create_run(
+            session,
+            input_sql=payload.input_sql,
+            processor_type=payload.processor_type,
+            processor_config=payload.processor_config,
+        )
+        await session.commit()
+
+        return RunResponse(
+            id=run.id,
+            input_sql=run.input_sql,
+            processor_type=run.processor_type,
+            processor_config=run.processor_config,
+            status=run.status,
+            total_groups=run.total_groups,
+            processed_groups=run.processed_groups,
+            output_count=run.output_count,
+            error_message=run.error_message,
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+            created_at=run.created_at,
+        )
+
+
+@router.get("/runs/{run_id}", response_model=RunResponse)
+async def get_run_endpoint(run_id: UUID) -> RunResponse:
+    """Get a processing run by ID."""
+    async with async_session() as session:
+        run = await get_run(session, run_id)
+
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    return RunResponse(
+        id=run.id,
+        input_sql=run.input_sql,
+        processor_type=run.processor_type,
+        processor_config=run.processor_config,
+        status=run.status,
+        total_groups=run.total_groups,
+        processed_groups=run.processed_groups,
+        output_count=run.output_count,
+        error_message=run.error_message,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
+    )
+
+
+# =============================================================================
 # Memory Scope endpoints
 # =============================================================================
 
@@ -565,17 +1168,26 @@ async def create_passage_in_scope_endpoint(
             logger.exception("Failed to generate embedding")
             raise HTTPException(status_code=502, detail=f"Embedding generation failed: {e}") from e
 
-        passage, new_version = await create_passage_in_scope(
-            session,
-            scope,
-            content=payload.content,
-            passage_type=payload.passage_type,
-            metadata=payload.metadata,
-            period_start=payload.period_start,
-            period_end=payload.period_end,
-            embedding_openai=embedding,
-        )
-        await session.commit()
+        try:
+            passage, new_version = await create_passage_in_scope(
+                session,
+                scope,
+                content=payload.content,
+                passage_type=payload.passage_type,
+                metadata=payload.metadata,
+                period_start=payload.period_start,
+                period_end=payload.period_end,
+                embedding_openai=embedding,
+            )
+            await session.commit()
+        except IntegrityError as e:
+            await session.rollback()
+            if "content_hash" in str(e):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Passage with identical content already exists. Use search to find it.",
+                ) from e
+            raise
 
         return ScopedPassageCreateResponse(
             passage_id=passage.id,

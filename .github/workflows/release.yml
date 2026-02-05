@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Build package
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    needs: build
+    runs-on: ubuntu-latest
+    if: contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta')
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v4
+      - name: Publish to TestPyPI
+        run: uv publish --index-url https://test.pypi.org/simple/
+
+  publish-pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    if: "!contains(github.ref, 'rc') && !contains(github.ref, 'alpha') && !contains(github.ref, 'beta')"
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v4
+      - name: Publish to PyPI
+        run: uv publish

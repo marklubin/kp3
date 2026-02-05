@@ -3,7 +3,27 @@ name = "kp3"
 version = "0.1.0"
 description = "KP3 - Knowledge Processing Pipeline with semantic search, world model extraction, and provenance tracking"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
+authors = [
+    {name = "Mark Lubin", email = "mark@kairix.org"}
+]
+keywords = [
+    "ai", "memory", "semantic-search", "embeddings", "pgvector",
+    "knowledge-base", "rag", "llm", "agent", "postgresql"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
 dependencies = [
     # Database
     "sqlalchemy[asyncio]>=2.0",
@@ -43,6 +63,13 @@ kp3 = "kp3.cli:cli"
 kp3-service = "kp3.query_service.main:main"
 kp3-mcp = "kp3.query_service.mcp:main"
 
+[project.urls]
+Homepage = "https://github.com/marklubin/kp3"
+Documentation = "https://github.com/marklubin/kp3#readme"
+Repository = "https://github.com/marklubin/kp3.git"
+Issues = "https://github.com/marklubin/kp3/issues"
+Changelog = "https://github.com/marklubin/kp3/blob/main/CHANGELOG.md"
+
 [build-system]
 requires = ["uv_build"]
 build-backend = "uv_build"
@@ -75,6 +102,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "S101"]
+"examples/*" = ["ANN", "T20"]  # Examples can use print and skip annotations
 "src/kp3/services/search.py" = ["S608"]  # SQL built from internal strings, not user input
 
 [tool.pyright]

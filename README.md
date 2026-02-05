@@ -1,5 +1,10 @@
 # KP3 - Knowledge Processing Pipeline
 
+[![PyPI version](https://img.shields.io/pypi/v/kp3.svg)](https://pypi.org/project/kp3/)
+[![CI](https://github.com/marklubin/kp3/actions/workflows/ci.yml/badge.svg)](https://github.com/marklubin/kp3/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+
 A semantic search and memory management system for AI agents. KP3 provides persistent, searchable memory with world model extraction - enabling AI agents to build and maintain understanding of users over time.
 
 ## What is KP3?
@@ -34,7 +39,8 @@ KP3 solves the "memory problem" for AI agents. While LLMs have context windows, 
 
 ### Prerequisites
 
-- Docker and Docker Compose
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
+- Podman or Docker
 - OpenAI API key (for embeddings)
 - Optional: DeepSeek API key (for world model extraction)
 
@@ -44,38 +50,56 @@ KP3 solves the "memory problem" for AI agents. While LLMs have context windows, 
 git clone https://github.com/marklubin/kp3.git
 cd kp3
 
-# Create environment file
-cat > .env << EOF
-KP3_OPENAI_API_KEY=sk-your-openai-key
-DEEPSEEK_API_KEY=sk-your-deepseek-key  # Optional
-EOF
+# Copy environment template and add your API key
+cp .env.example .env
+# Edit .env and set: KP3_OPENAI_API_KEY=sk-your-key
 ```
 
 ### 2. Start Services
 
 ```bash
-# Start PostgreSQL and KP3 service
-docker compose -f docker-compose.yml up -d
+# Start PostgreSQL with pgvector
+podman run -d --name kp3-postgres \
+  -e POSTGRES_USER=kp3 \
+  -e POSTGRES_PASSWORD=kp3 \
+  -e POSTGRES_DB=kp3 \
+  -p 5432:5432 \
+  pgvector/pgvector:pg16
+
+# Install dependencies
+uv sync
 
 # Run database migrations
-docker compose -f docker-compose.yml exec kp3-service uv run alembic upgrade head
+uv run alembic upgrade head
 
-# Seed default prompts (for world model extraction)
-docker compose -f docker-compose.yml exec kp3-service uv run kp3 world-model seed-prompts
+# Start the service
+uv run kp3-service
 ```
 
 ### 3. Verify Installation
 
 ```bash
-# Check service health
+# Check service health (in another terminal)
 curl http://localhost:8080/health
 
-# Create a test passage
-docker compose -f docker-compose.yml exec kp3-service uv run kp3 passage create "Hello, KP3!" -t manual_input
-
-# List passages
-docker compose -f docker-compose.yml exec kp3-service uv run kp3 passage ls
+# Run an example
+uv run python examples/01_passages/semantic_notes.py
 ```
+
+### Using Docker Compose
+
+Alternatively, use Docker Compose for the full stack:
+
+```bash
+docker compose up -d
+docker compose exec kp3-service uv run alembic upgrade head
+docker compose exec kp3-service uv run python examples/01_passages/semantic_notes.py
+```
+
+## Tutorial & Examples
+
+- **[Tutorial](docs/tutorial.md)**: Comprehensive guide from zero to knowledge processing
+- **[Examples](examples/)**: Hands-on demos for each feature
 
 ## Configuration
 

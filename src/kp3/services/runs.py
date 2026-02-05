@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select, text
@@ -23,7 +23,7 @@ async def create_run(
     session: AsyncSession,
     input_sql: str,
     processor_type: str,
-    processor_config: dict,
+    processor_config: dict[str, Any],
 ) -> ProcessingRun:
     """Create a new processing run."""
     run = ProcessingRun(
